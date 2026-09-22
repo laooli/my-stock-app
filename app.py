@@ -146,7 +146,7 @@ if 上传文件 is not None:
             return ""
 
         st.dataframe(
-            结果表.style.applymap(着色, subset=["盈亏"]),
+            结果表.style.map(着色, subset=["盈亏"]),
             use_container_width=True
         )
 
