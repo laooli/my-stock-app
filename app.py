@@ -1,4 +1,45 @@
-# -*- coding: utf-8 -*-
+import streamlit as st
+import pandas as pd
+from io import StringIO
+from google.colab import files
+
+# ================= 1. 页面美化模板（加在最前面） =================
+st.set_page_config(
+    page_title="我的股票复盘分析系统",
+    page_icon="📈",
+    layout="wide"  # 使用宽屏，避免两边留白太多
+)
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+st.title("📈 我的专属股票复盘工具")
+st.caption("数据来源：通达信交割单 | 个人使用")
+# ==============================================================
+
+# ================= 2. 你的上传和解析代码（不用动） =================
+uploaded_fund = st.sidebar.file_uploader("上传资金明细", type=["txt"])
+
+if uploaded_fund is not None:
+    try:
+        fund_raw = uploaded_fund.read().decode("gbk")
+    except UnicodeDecodeError:
+        fund_raw = uploaded_fund.read().decode("gb18030")
+
+    fund_df = pd.read_csv(StringIO(fund_raw), sep=r"\s+", dtype=str)
+    fund_df = fund_df.dropna(how="all").reset_index(drop=True)
+
+    # ====== 3. 这里就是美化过的“账户总览” ======
+    with st.expander("🏦 点击查看账户资产总览（来自资金明细）"):
+        st.dataframe(fund_df, use_container_width=True, hide_index=True)
+
+else:
+    st.info("👈 请在左侧侧边栏上传【通达信交割单.txt】文件，系统将自动为您进行多维分析")
+    st.info("可选：同时上传【资金明细查询.txt】以查看账户资产总览")# -*- coding: utf-8 -*-
 """
 股票分析系统 v3.0 - 增强版
 新增功能：
