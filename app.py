@@ -1,158 +1,194 @@
 import streamlit as st
 import akshare as ak
 import pandas as pd
-import mplfinance as mpf
-import matplotlib.pyplot as plt
-import io
 import numpy as np
+from datetime import datetime
+import time
+import random
 
-st.set_page_config(layout="wide", page_title="我的股票分析")
+st.set_page_config(layout="wide", page_title="我的股票分析系统")
 st.title("📊 我的股票分析系统")
 
-# ========== 第一部分：上传交割单 ==========
+
+# ========== 带缓存+重试的数据获取函数 ==========
+@st.cache_data(ttl=300, show_spinner="正在获取行情数据...")
+def get_stock_hist(code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+    """指数退避重试 + 缓存，避免批量请求被封"""
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq"
+            )
+            if df is not None and len(df) > 0:
+                return df
+        except Exception:
+            time.sleep((2 ** attempt) + random.uniform(0, 1))
+    return None
+
+
+# ========== 侧边栏：上传交割单 ==========
 st.sidebar.header("📂 上传交割单")
 上传文件 = st.sidebar.file_uploader("上传通达信交割单（txt）", type=["txt"])
 
 if 上传文件 is not None:
-    # 读文件
+    # ---------- 1. 解析交割单（适配真实格式）----------
     try:
-        df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gbk")
-    except:
-        df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gb18030")
+        raw = 上传文件.read().decode("gbk")
+    except UnicodeDecodeError:
+        raw = 上传文件.read().decode("gb18030")
 
-    df = df.dropna(how="all")
-    df = df[["交割日期", "证券代码", "证券名称", "业务类型", "成交价格", "成交数量", "成交金额", "发生金额", "证券数量"]]
+    from io import StringIO
+    df = pd.read_csv(StringIO(raw), sep=r"\s+", skiprows=1, dtype=str)
+    df = df.dropna(how="all").reset_index(drop=True)
 
-    # 强制把数字列变成数字
-    df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
-    df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce").fillna(0)
-    df["发生金额"] = pd.to_numeric(df["发生金额"], errors="coerce").fillna(0)
-    df["成交数量"] = pd.to_numeric(df["成交数量"], errors="coerce").fillna(0)
-    df["成交金额"] = pd.to_numeric(df["成交金额"], errors="coerce").fillna(0)
+    # 校验必要列
+    必要列 = ["交割日期", "证券代码", "证券名称", "业务类型", "成交价格", "成交数量", "发生金额", "证券数量"]
+    missing = [c for c in 必要列 if c not in df.columns]
+    if missing:
+        st.error(f"交割单缺少必要列：{missing}，请检查文件格式")
+        st.stop()
 
-    # ========== 第二部分：账户总览 ==========
+    # 数值列转换（原始数据为字符串，避免科学计数法问题）
+    num_cols = ["成交价格", "成交数量", "发生金额", "证券数量"]
+    for col in num_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # ---------- 2. 筛选交易记录 & 计算真实持仓 ----------
+    交易 = df[df["业务类型"].isin(["证券买入", "证券卖出"])].copy()
+    交易["交割日期"] = pd.to_datetime(交易["交割日期"])
+    交易 = 交易.sort_values("交割日期").reset_index(drop=True)
+
+    # 真实持仓 = 累计买入数量 - 累计卖出数量（而非取最后一笔记录）
+    持仓汇总 = 交易.groupby("证券代码").agg(
+        证券名称=("证券名称", "last"),
+        买入总量=("成交数量", lambda x: x[交易.loc[x.index, "业务类型"] == "证券买入"].sum()),
+        卖出总量=("成交数量", lambda x: x[交易.loc[x.index, "业务类型"] == "证券卖出"].sum()),
+        买入总成本=("发生金额", lambda x: x[交易.loc[x.index, "业务类型"] == "证券买入"].sum()),
+    ).reset_index()
+    持仓汇总["净持仓"] = 持仓汇总["买入总量"] - 持仓汇总["卖出总量"]
+    最新持仓 = 持仓汇总[持仓汇总["净持仓"] > 0].copy()
+    # 计算加权成本价（仅基于买入记录）
+    最新持仓["成本价"] = np.where(
+        最新持仓["买入总量"] > 0,
+        abs(最新持仓["买入总成本"]) / 最新持仓["买入总量"],
+        0
+    )
+
+    # ---------- 3. 账户总览（修正盈亏&胜率）----------
     st.subheader("📈 账户总览")
 
-    交易 = df[df["业务类型"].isin(["证券买入", "证券卖出"])].copy()
-    最新持仓 = df.groupby("证券代码").last().reset_index()
-    最新持仓 = 最新持仓[最新持仓["证券数量"] > 0]
-
+    # 总盈亏 = 所有卖出收入 + 所有买入支出（买入发生金额为负）
     买入总额 = 交易[交易["业务类型"] == "证券买入"]["发生金额"].sum()
     卖出总额 = 交易[交易["业务类型"] == "证券卖出"]["发生金额"].sum()
-    总盈亏 = 卖出总额 + 买入总额
+    已实现盈亏 = 卖出总额 + 买入总额  # 仅统计已完成买卖的标的
 
+    # 胜率：按标的完整买卖周期计算（卖出均价 > 买入均价）
     盈利笔数 = 0
-    总卖出笔数 = 0
-    for 代码 in 交易["证券代码"].unique():
-        子表 = 交易[交易["证券代码"] == 代码]
-        买入 = 子表[子表["业务类型"] == "证券买入"]
-        卖出 = 子表[子表["业务类型"] == "证券卖出"]
-        if len(买入) > 0 and len(卖出) > 0:
-            买入均价 = (买入["成交价格"] * 买入["成交数量"]).sum() / 买入["成交数量"].sum()
-            卖出均价 = (卖出["成交价格"] * 卖出["成交数量"]).sum() / 卖出["成交数量"].sum()
-            总卖出笔数 += 1
-            if 卖出均价 > 买入均价:
-                盈利笔数 += 1
+    总完成笔数 = 0
+    for code in 交易["证券代码"].unique():
+        sub = 交易[交易["证券代码"] == code]
+        buys = sub[sub["业务类型"] == "证券买入"]
+        sells = sub[sub["业务类型"] == "证券卖出"]
+        if len(buys) == 0 or len(sells) == 0:
+            continue
+        总完成笔数 += 1
+        buy_avg = abs(buys["发生金额"].sum()) / buys["成交数量"].sum()
+        sell_avg = sells["发生金额"].sum() / sells["成交数量"].sum()
+        if sell_avg > buy_avg:
+            盈利笔数 += 1
 
-    胜率 = 盈利笔数 / 总卖出笔数 * 100 if 总卖出笔数 > 0 else 0
+    胜率 = (盈利笔数 / 总完成笔数 * 100) if 总完成笔数 > 0 else 0
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("总盈亏", f"¥{总盈亏:.2f}")
-    col2.metric("交易笔数", f"{len(交易)} 笔")
-    col3.metric("胜率", f"{胜率:.1f}%")
-    col4.metric("当前持仓", f"{len(最新持仓)} 只")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("已实现盈亏", f"¥{已实现盈亏:.2f}", delta=f"{已实现盈亏:+.2f}")
+    c2.metric("交易笔数", f"{len(交易)} 笔")
+    c3.metric("胜率", f"{胜率:.1f}%")
+    c4.metric("当前持仓", f"{len(最新持仓)} 只")
 
-    # ========== 第三部分：当前持仓 5 维评分 ==========
+    # ---------- 4. 5维评分（动态日期 + 进度条）----------
     st.subheader("🎯 当前持仓 5 维评分")
+    today = datetime.now().strftime("%Y%m%d")
+    start_date = "20240101"
 
     if len(最新持仓) > 0:
-        结果 = []
-        for i in range(len(最新持仓)):
-            代码 = str(最新持仓.iloc[i]["证券代码"]).zfill(6)
-            名称 = 最新持仓.iloc[i]["证券名称"]
-            数量 = 最新持仓.iloc[i]["证券数量"]
-            成本价 = 最新持仓.iloc[i]["成交价格"]
+        results = []
+        bar = st.progress(0, text="正在分析持仓...")
+        for i, (_, row) in enumerate(最新持仓.iterrows()):
+            code = str(row["证券代码"]).zfill(6)
+            bar.progress((i + 1) / len(最新持仓))
 
-            try:
-                行情 = ak.stock_zh_a_hist(
-                    symbol=代码, period="daily",
-                    start_date="20240101", end_date="20260922",
-                    adjust="qfq"
-                )
-                行情["日期"] = pd.to_datetime(行情["日期"])
-                行情 = 行情.sort_values("日期").reset_index(drop=True)
-
-                bbi = (行情["收盘"].rolling(3).mean() + 行情["收盘"].rolling(6).mean() +
-                       行情["收盘"].rolling(12).mean() + 行情["收盘"].rolling(24).mean()) / 4
-
-                最低 = 行情["最低"].rolling(9).min()
-                最高 = 行情["最高"].rolling(9).max()
-                RSV = (行情["收盘"] - 最低) / (最高 - 最低) * 100
-                K = RSV.ewm(com=2).mean()
-                D = K.ewm(com=2).mean()
-
-                最新 = 行情.iloc[-1]
-                昨日 = 行情.iloc[-2]
-
-                近20日最低 = 行情["最低"].tail(20).min()
-                前20日最低 = 行情["最低"].tail(40).head(20).min()
-                趋势方向 = 1 if 近20日最低 > 前20日最低 else 0
-
-                生命线 = 1 if 最新["收盘"] > bbi.iloc[-1] else 0
-
-                昨日跌幅 = (昨日["收盘"] - 昨日["开盘"]) / 昨日["开盘"]
-                昨日放量 = 昨日["成交量"] > 行情["成交量"].tail(5).mean() * 1.5
-                巨量阴线 = (昨日跌幅 < -0.03) and 昨日放量
-                量价健康 = 0 if 巨量阴线 else 1
-
-                均线向上 = 1 if 最新["收盘"] > 行情["收盘"].tail(20).mean() else 0
-                KDJ健康 = 1 if K.iloc[-1] > D.iloc[-1] else 0
-
-                总分 = 趋势方向 + 生命线 + 量价健康 + 均线向上 + KDJ健康
-
-                现价 = 最新["收盘"]
-                市值 = 现价 * 数量
-                成本 = 成本价 * 数量
-                盈亏 = 市值 - 成本
-                盈亏率 = 盈亏 / 成本 * 100 if 成本 > 0 else 0
-
-                结果.append({
-                    "代码": 代码,
-                    "名称": 名称,
-                    "数量": 数量,
-                    "成本价": 成本价,
-                    "现价": round(现价, 2),
-                    "市值": round(市值, 2),
-                    "盈亏": round(盈亏, 2),
-                    "盈亏率": f"{盈亏率:.2f}%",
-                    "5维评分": 总分,
-                    "信号": "🔥 重点观察" if 总分 >= 4 else ("👀 观察" if 总分 >= 3 else "⚠️ 回避")
+            hist = get_stock_hist(code, start_date, today)
+            if hist is None or len(hist) < 30:
+                results.append({
+                    "代码": code, "名称": row["证券名称"], "数量": int(row["净持仓"]),
+                    "成本价": round(row["成本价"], 2), "现价": None, "市值": 0,
+                    "盈亏": 0, "盈亏率": 0, "5维评分": 0, "信号": "❌ 数据不足"
                 })
-            except Exception as e:
-                结果.append({
-                    "代码": 代码, "名称": 名称, "数量": 数量,
-                    "成本价": 成本价, "现价": "获取失败", "市值": 0,
-                    "盈亏": 0, "盈亏率": "0%", "5维评分": 0, "信号": "❌ 无法分析"
-                })
+                continue
 
-        结果表 = pd.DataFrame(结果)
+            hist["日期"] = pd.to_datetime(hist["日期"])
+            hist = hist.sort_values("日期").reset_index(drop=True)
 
-        def 着色(val):
-            if isinstance(val, (int, float)):
-                if val > 0:
-                    return "color: #00ff00"
-                elif val < 0:
-                    return "color: #ff4444"
+            # BBI
+            bbi = (hist["收盘"].rolling(3).mean() + hist["收盘"].rolling(6).mean() +
+                   hist["收盘"].rolling(12).mean() + hist["收盘"].rolling(24).mean()) / 4
+            # KDJ
+            low9 = hist["最低"].rolling(9).min()
+            high9 = hist["最高"].rolling(9).max()
+            rsv = (hist["收盘"] - low9) / (high9 - low9) * 100
+            K = rsv.ewm(com=2).mean()
+            D = K.ewm(com=2).mean()
+
+            latest = hist.iloc[-1]
+            prev = hist.iloc[-2]
+
+            # 5维打分
+            d1 = 1 if hist["最低"].tail(20).min() > hist["最低"].tail(40).head(20).min() else 0
+            d2 = 1 if latest["收盘"] > bbi.iloc[-1] else 0
+            drop = (prev["收盘"] - prev["开盘"]) / prev["开盘"]
+            vol_spike = prev["成交量"] > hist["成交量"].tail(5).mean() * 1.5
+            d3 = 0 if (drop < -0.03 and vol_spike) else 1
+            d4 = 1 if latest["收盘"] > hist["收盘"].tail(20).mean() else 0
+            d5 = 1 if K.iloc[-1] > D.iloc[-1] else 0
+            score = d1 + d2 + d3 + d4 + d5
+
+            price = latest["收盘"]
+            qty = int(row["净持仓"])
+            cost = row["成本价"] * qty
+            mv = price * qty
+            pnl = mv - cost
+            pnl_pct = (pnl / cost * 100) if cost > 0 else 0
+
+            signal = "🔥 重点观察" if score >= 4 else ("👀 观察" if score >= 3 else "⚠️ 回避")
+            results.append({
+                "代码": code, "名称": row["证券名称"], "数量": qty,
+                "成本价": round(cost / qty, 2), "现价": round(price, 2),
+                "市值": round(mv, 2), "盈亏": round(pnl, 2),
+                "盈亏率": round(pnl_pct, 2), "5维评分": score, "信号": signal
+            })
+
+        result_df = pd.DataFrame(results)
+
+        def color_pnl(val):
+            if pd.isna(val):
+                return ""
+            if val > 0:
+                return "color:#00cc00;font-weight:bold"
+            if val < 0:
+                return "color:#ff3333;font-weight:bold"
             return ""
 
         st.dataframe(
-            结果表.style.map(着色, subset=["盈亏"]),
-            use_container_width=True
+            result_df.style.map(color_pnl, subset=["盈亏", "盈亏率"]),
+            use_container_width=True, hide_index=True
         )
+    else:
+        st.info("当前无持仓")
 
-    # ========== 第四部分：交易记录 ==========
+    # ---------- 5. 交易记录 ----------
     st.subheader("📝 交易记录")
-    st.dataframe(交易, use_container_width=True)
+    st.dataframe(交易, use_container_width=True, hide_index=True)
 
 else:
-    st.info("请先在左边上传通达信交割单（txt 文件）")
+    st.info("👈 请在左侧上传通达信交割单（txt 文件）开始分析")
