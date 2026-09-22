@@ -5,7 +5,6 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 import io
 import numpy as np
-
 # 设置页面宽屏
 st.set_page_config(layout="wide", page_title="我的股票分析")
 
