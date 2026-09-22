@@ -5,41 +5,38 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 import io
 import numpy as np
-# 设置页面宽屏
-st.set_page_config(layout="wide", page_title="我的股票分析")
 
+st.set_page_config(layout="wide", page_title="我的股票分析")
 st.title("📊 我的股票分析系统")
 
 # ========== 第一部分：上传交割单 ==========
 st.sidebar.header("📂 上传交割单")
 上传文件 = st.sidebar.file_uploader("上传通达信交割单（txt）", type=["txt"])
-    # 强制把数量和价格变成数字
-df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
-df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce")
+
 if 上传文件 is not None:
     try:
         df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gbk")
     except:
         df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gb18030")
-    
+
     df = df.dropna(how="all")
     df = df[["交割日期", "证券代码", "证券名称", "业务类型", "成交价格", "成交数量", "成交金额", "发生金额", "证券数量"]]
+
+    # 强制把数量和价格变成数字
+    df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
+    df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce")
 
     # ========== 第二部分：账户总览 ==========
     st.subheader("📈 账户总览")
 
     交易 = df[df["业务类型"].isin(["证券买入", "证券卖出"])].copy()
-    
-    # 当前持仓：取每只股票最后一行，且证券数量 > 0
     最新持仓 = df.groupby("证券代码").last().reset_index()
     最新持仓 = 最新持仓[最新持仓["证券数量"] > 0]
 
-    # 算总盈亏
     买入总额 = 交易[交易["业务类型"] == "证券买入"]["发生金额"].sum()
     卖出总额 = 交易[交易["业务类型"] == "证券卖出"]["发生金额"].sum()
-    总盈亏 = 卖出总额 + 买入总额  # 买入是负数，卖出是正数
+    总盈亏 = 卖出总额 + 买入总额
 
-    # 算胜率
     盈利笔数 = 0
     总卖出笔数 = 0
     for 代码 in 交易["证券代码"].unique():
@@ -55,7 +52,6 @@ if 上传文件 is not None:
 
     胜率 = 盈利笔数 / 总卖出笔数 * 100 if 总卖出笔数 > 0 else 0
 
-    # 三列卡片
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("总盈亏", f"¥{总盈亏:.2f}")
     col2.metric("交易笔数", f"{len(交易)} 笔")
@@ -82,11 +78,9 @@ if 上传文件 is not None:
                 行情["日期"] = pd.to_datetime(行情["日期"])
                 行情 = 行情.sort_values("日期").reset_index(drop=True)
 
-                # BBI
                 bbi = (行情["收盘"].rolling(3).mean() + 行情["收盘"].rolling(6).mean() +
                        行情["收盘"].rolling(12).mean() + 行情["收盘"].rolling(24).mean()) / 4
 
-                # KDJ
                 最低 = 行情["最低"].rolling(9).min()
                 最高 = 行情["最高"].rolling(9).max()
                 RSV = (行情["收盘"] - 最低) / (最高 - 最低) * 100
@@ -96,24 +90,18 @@ if 上传文件 is not None:
                 最新 = 行情.iloc[-1]
                 昨日 = 行情.iloc[-2]
 
-                # 维度1：趋势方向（低点比前一个低点高）
                 近20日最低 = 行情["最低"].tail(20).min()
                 前20日最低 = 行情["最低"].tail(40).head(20).min()
                 趋势方向 = 1 if 近20日最低 > 前20日最低 else 0
 
-                # 维度2：收盘价不破 BBI
                 生命线 = 1 if 最新["收盘"] > bbi.iloc[-1] else 0
 
-                # 维度3：无巨量阴线
                 昨日跌幅 = (昨日["收盘"] - 昨日["开盘"]) / 昨日["开盘"]
                 昨日放量 = 昨日["成交量"] > 行情["成交量"].tail(5).mean() * 1.5
                 巨量阴线 = (昨日跌幅 < -0.03) and 昨日放量
                 量价健康 = 0 if 巨量阴线 else 1
 
-                # 维度4：均线向上
                 均线向上 = 1 if 最新["收盘"] > 行情["收盘"].tail(20).mean() else 0
-
-                # 维度5：KDJ 没死叉
                 KDJ健康 = 1 if K.iloc[-1] > D.iloc[-1] else 0
 
                 总分 = 趋势方向 + 生命线 + 量价健康 + 均线向上 + KDJ健康
@@ -145,7 +133,6 @@ if 上传文件 is not None:
 
         结果表 = pd.DataFrame(结果)
 
-        # 美化表格
         def 着色(val):
             if isinstance(val, (int, float)):
                 if val > 0:
