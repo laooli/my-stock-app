@@ -14,6 +14,7 @@ st.sidebar.header("📂 上传交割单")
 上传文件 = st.sidebar.file_uploader("上传通达信交割单（txt）", type=["txt"])
 
 if 上传文件 is not None:
+    # 读文件
     try:
         df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gbk")
     except:
@@ -22,9 +23,12 @@ if 上传文件 is not None:
     df = df.dropna(how="all")
     df = df[["交割日期", "证券代码", "证券名称", "业务类型", "成交价格", "成交数量", "成交金额", "发生金额", "证券数量"]]
 
-    # 强制把数量和价格变成数字
+    # 强制把数字列变成数字
     df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
-    df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce")
+    df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce").fillna(0)
+    df["发生金额"] = pd.to_numeric(df["发生金额"], errors="coerce").fillna(0)
+    df["成交数量"] = pd.to_numeric(df["成交数量"], errors="coerce").fillna(0)
+    df["成交金额"] = pd.to_numeric(df["成交金额"], errors="coerce").fillna(0)
 
     # ========== 第二部分：账户总览 ==========
     st.subheader("📈 账户总览")
