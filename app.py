@@ -2,10 +2,14 @@ import streamlit as st
 import akshare as ak
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime
 import time
 import random
-import matplotlib.pyplot as plt
+
+# 设置 matplotlib 支持中文显示
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif'] 
+plt.rcParams['axes.unicode_minus'] = False
 
 # 设置页面配置
 st.set_page_config(layout="wide", page_title="我的股票分析系统", page_icon="📊")
@@ -233,7 +237,8 @@ if uploaded_file is not None:
             if not 结果_df[结果_df["市值"] > 0].empty:
                 饼图数据 = 结果_df[结果_df["市值"] > 0][["名称", "市值"]].set_index("名称")["市值"]
                 fig1, ax1 = plt.subplots(figsize=(8, 5))
-                ax1.pie(饼图数据, labels=饼图_data.index, autopct='%1.1f%%', startangle=90)
+                # 修复：使用正确的变量名 饼图数据
+                ax1.pie(饼图数据, labels=饼图数据.index, autopct='%1.1f%%', startangle=90)
                 ax1.axis('equal')
                 st.pyplot(fig1)
                 plt.close(fig1)
