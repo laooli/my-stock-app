@@ -551,3 +551,32 @@ if uploaded_file is not None:
 else:
     st.info("👈 请在左侧侧边栏上传【通达信交割单.txt】文件，系统将自动为您进行多维分析")
     st.info("可选：同时上传【资金明细查询.txt】以查看账户资产总览")
+st.divider()
+st.subheader("📊 本月盈亏比分析（自动计算）")
+
+# 把数据按股票代码和名称分组，算出总买入和总卖出
+df["发生金额"] = df["发生金额"].astype(float)
+
+# 找出所有买入和卖出的记录
+buy_df = df[df["业务类型"].str.contains("买入")].groupby("证券名称")["发生金额"].sum().abs()
+sell_df = df[df["业务类型"].str.contains("卖出")].groupby("证券名称")["发生金额"].sum()
+
+# 算出每只股票的盈亏（卖出 - 买入）
+profit_df = pd.DataFrame({"总买入": buy_df, "总卖出": sell_df}).fillna(0)
+profit_df["盈亏"] = profit_df["总卖出"] - profit_df["总买入"]
+
+st.dataframe(profit_df, use_container_width=True)
+
+# 统计盈利和亏损
+wins = profit_df[profit_df["盈亏"] > 0]["盈亏"]
+losses = profit_df[profit_df["盈亏"] < 0]["盈亏"]
+
+if len(wins) > 0 and len(losses) > 0:
+    avg_win = wins.mean()
+    avg_loss = abs(losses.mean())
+    ratio = avg_win / avg_loss
+    st.success(f"✅ 本月平均盈利：{avg_win:.2f} 元")
+    st.error(f"❌ 本月平均亏损：{avg_loss:.2f} 元")
+    st.info(f"📈 本月盈亏比：{ratio:.2f} （平均盈利 ÷ 平均亏损）")
+else:
+    st.warning("数据不够，暂时无法计算盈亏比（需要至少一笔盈利和一笔亏损）")
