@@ -15,8 +15,8 @@ st.title("📊 我的股票分析系统")
 st.sidebar.header("📂 上传交割单")
 上传文件 = st.sidebar.file_uploader("上传通达信交割单（txt）", type=["txt"])
     # 强制把数量和价格变成数字
-    df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
-    df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce")
+df["证券数量"] = pd.to_numeric(df["证券数量"], errors="coerce").fillna(0)
+df["成交价格"] = pd.to_numeric(df["成交价格"], errors="coerce")
 if 上传文件 is not None:
     try:
         df = pd.read_csv(上传文件, sep=r"\s+", skiprows=1, encoding="gbk")
